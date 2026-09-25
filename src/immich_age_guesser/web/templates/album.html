@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ album.albumName }}{% endblock %}
+{% block content %}
+<div id="app" data-album="{{ album.id }}" data-immich="{{ immich_url }}">
+  <div class="section-head">
+    <h1>{{ album.albumName }}</h1>
+    <a class="muted" href="{{ immich_url }}/albums/{{ album.id }}" target="_blank" rel="noopener">Open in Immich ↗</a>
+  </div>
+
+  <section id="people-strip" class="people-strip" hidden></section>
+
+  <section class="panel sticky">
+    <div class="selection row">
+      <strong id="sel-count">0 selected</strong>
+      <button data-select="all">All</button>
+      <button data-select="none">None</button>
+      <button data-select="undated">Not dated yet</button>
+      <button data-select="suggested">With suggestion</button>
+    </div>
+
+    <div class="actions">
+      <form id="known-form" class="action">
+        <h3>I know the date</h3>
+        <div class="row">
+          <input id="known-date" placeholder="e.g. 1987, 06.1987, 14.06.1987, 1985-1989, 1980s" autocomplete="off">
+          <button type="submit" class="primary">Write date</button>
+        </div>
+        <div id="known-hint" class="hint muted">Year or month is enough.</div>
+        <label><input id="keep-order" type="checkbox" checked> Keep file order in the timeline (1 minute apart)</label>
+      </form>
+
+      <form id="estimate-form" class="action">
+        <h3>Estimate from faces</h3>
+        <div class="row">
+          <label>Not before <input id="not-before" placeholder="year" size="6"></label>
+          <label>Not after <input id="not-after" placeholder="year" size="6"></label>
+          <button type="submit" class="primary">Estimate</button>
+        </div>
+        <label><input id="joint" type="checkbox"> Selected photos are from the same event (combine all faces)</label>
+        <div class="row">
+          <button type="button" id="apply" disabled>Write suggestions</button>
+          <button type="button" id="discard" disabled>Discard suggestions</button>
+        </div>
+      </form>
+    </div>
+    <div id="job" class="job" hidden></div>
+  </section>
+
+  <section>
+    <div id="grid" class="grid"><p class="muted">Loading photos…</p></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='common.js') }}"></script>
+<script src="{{ url_for('static', path='album.js') }}"></script>{% endblock %}

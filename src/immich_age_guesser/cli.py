@@ -1,0 +1,141 @@
+"""Command line entry point: `immich-age-guesser serve|check|set-date|estimate|calibrate`."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+from .config import Settings
+from .dates import parse_date_spec, parse_year_bound
+from .immich import ImmichClient
+from .service import AgeGuesser
+from .store import Store
+
+
+def _guesser(settings: Settings) -> AgeGuesser:
+    immich = ImmichClient(settings.immich_url, settings.immich_api_key)
+    return AgeGuesser(settings, immich, Store(settings.data_dir / "age-guesser.sqlite"))
+
+
+def _progress(label: str):
+    def show(done: int, total: int) -> None:
+        print(f"\r{label}: {done}/{total}", end="" if done < total else "\n", file=sys.stderr, flush=True)
+    return show
+
+
+def cmd_serve(args: argparse.Namespace, settings: Settings) -> None:
+    import uvicorn
+
+    from .web.app import create_app
+
+    uvicorn.run(create_app(_guesser(settings)), host=args.host, port=args.port)
+
+
+def cmd_check(args: argparse.Namespace, settings: Settings) -> None:
+    g = _guesser(settings)
+    print(f"Immich {g.immich.server_version()} at {settings.immich_url}")
+    people = [p for p in g.immich.people() if p.name]
+    with_bd = sum(1 for p in people if p.birth_date)
+    print(f"{len(people)} named people, {with_bd} with a birthday")
+    print(f"Loading age model {g.backend} …")
+    from PIL import Image
+
+    from .faces import load_image
+
+    if args.image:
+        img = load_image(Path(args.image).read_bytes())
+    else:
+        img = Image.new("RGB", (224, 224), (128, 128, 128))
+    age = g.estimator.estimate([img])[0]
+    print(f"Model works. Estimated age{' of ' + args.image if args.image else ' (blank test image)'}: {age:.1f}")
+    print("Calibration:", "yes" if g.calibration_summary()["calibrated"] else "not yet (run `calibrate`)")
+
+
+def cmd_set_date(args: argparse.Namespace, settings: Settings) -> None:
+    g = _guesser(settings)
+    spec = parse_date_spec(args.date)
+    album = g.immich.find_album(args.album)
+    ids = [a.id for a in g.immich.album_assets(album["id"])]
+    print(f"Writing {spec.label} to {len(ids)} photos in '{album['albumName']}'")
+    result = g.apply_known_date(ids, spec, keep_order=not args.no_keep_order, progress=_progress("Writing"))
+    print(f"Done: {result['written']} photos dated {result['date']}")
+
+
+def cmd_estimate(args: argparse.Namespace, settings: Settings) -> None:
+    g = _guesser(settings)
+    album = g.immich.find_album(args.album)
+    assets = g.immich.album_assets(album["id"])
+    dated = g.store.dated([a.id for a in assets])
+    if not args.include_dated:
+        assets = [a for a in assets if a.id not in dated]
+    ids = [a.id for a in assets]
+    names = {a.id: a.file_name for a in assets}
+    results = g.estimate(ids, joint=args.joint, not_before=parse_year_bound(args.not_before, end=False),
+                         not_after=parse_year_bound(args.not_after, end=True), progress=_progress("Faces"))
+    for aid, res in results.items():
+        est = res["estimate"]
+        line = f"≈ {est['label']:>8}  ({est['range_label']}, {est['confidence']})" if est else f"  –  {res['message']}"
+        print(f"{names[aid][:40]:40} {line}")
+    if args.apply:
+        out = g.apply_estimates(ids, progress=_progress("Writing"))
+        print(f"Wrote {out['written']} dates, skipped {out['skipped']}")
+    else:
+        print("Suggestions saved. Review them in the web UI, or re-run with --apply to write them.")
+
+
+def cmd_calibrate(args: argparse.Namespace, settings: Settings) -> None:
+    g = _guesser(settings)
+    report = g.calibrate(per_person=args.per_person, progress=_progress("Faces"))
+    print(f"Calibrated on {report.samples} faces of {report.people} people.")
+    print(f"Mean age error: {report.mae_before} years raw, {report.mae_after} after correction (in-sample).")
+    print(f"{'age':>5} {'faces':>7} {'bias':>7} {'spread':>7}")
+    for b in report.bins:
+        if b["samples"] >= 1:
+            print(f"{b['age']:>5.0f} {b['samples']:>7.1f} {b['bias']:>+7.1f} {b['sigma']:>7.1f}")
+    print(f"Saved to {g.calibration_path}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="immich-age-guesser", description=__doc__)
+    parser.add_argument("-v", "--verbose", action="store_true")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("serve", help="run the web UI")
+    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--port", type=int, default=8080)
+    p.set_defaults(fn=cmd_serve)
+
+    p = sub.add_parser("check", help="test the Immich connection and the age model")
+    p.add_argument("--image", help="a face photo to run the model on")
+    p.set_defaults(fn=cmd_check)
+
+    p = sub.add_parser("set-date", help="write a known date to every photo of an album")
+    p.add_argument("--album", required=True, help="album name or id")
+    p.add_argument("--date", required=True, help="e.g. 1987, 06.1987, 14.06.1987, 1985-1989, 1980s")
+    p.add_argument("--no-keep-order", action="store_true", help="give all photos the exact same time")
+    p.set_defaults(fn=cmd_set_date)
+
+    p = sub.add_parser("estimate", help="estimate dates of the photos in an album")
+    p.add_argument("--album", required=True, help="album name or id")
+    p.add_argument("--joint", action="store_true", help="treat the album as one event")
+    p.add_argument("--not-before", help="earliest possible year/date")
+    p.add_argument("--not-after", help="latest possible year/date")
+    p.add_argument("--include-dated", action="store_true", help="also re-estimate photos dated by this tool")
+    p.add_argument("--apply", action="store_true", help="write the estimates to Immich right away")
+    p.set_defaults(fn=cmd_estimate)
+
+    p = sub.add_parser("calibrate", help="learn the model's errors from photos with known dates")
+    p.add_argument("--per-person", type=int, default=60, help="max photos per person")
+    p.set_defaults(fn=cmd_calibrate)
+
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    args.fn(args, Settings.from_env())
+
+
+if __name__ == "__main__":
+    main()

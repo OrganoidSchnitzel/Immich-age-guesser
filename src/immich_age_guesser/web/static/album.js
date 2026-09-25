@@ -1,0 +1,221 @@
+"use strict";
+
+const app = document.getElementById("app");
+const albumId = app.dataset.album;
+const immichUrl = app.dataset.immich;
+const grid = document.getElementById("grid");
+const jobEl = document.getElementById("job");
+const selCount = document.getElementById("sel-count");
+const applyBtn = document.getElementById("apply");
+const discardBtn = document.getElementById("discard");
+
+let assets = [];
+const selected = new Set();
+
+const hasSuggestion = a => a.estimate && a.estimate.status === "ok";
+
+function yearOf(iso) { return iso ? iso.slice(0, 10) : "–"; }
+
+function statusHtml(a) {
+  const est = a.estimate;
+  if (est) {
+    if (est.status !== "ok") {
+      return `<div class="badge problem">${esc(est.message || "No estimate")}</div>`;
+    }
+    const e = est.estimate;
+    const faces = e.observations.filter(o => o.asset_id === a.id).map(o =>
+      `<li class="${o.outlier ? "outlier" : ""}" title="Born ${esc(o.birth_date)}">${esc(o.person_name)} looks ${o.estimated_age.toFixed(0)}` +
+      `${o.outlier ? " – doesn't fit, check face/birthday" : ""}</li>`).join("");
+    const joint = est.joint ? `<div class="muted">Same event: ${e.asset_count} photo${e.asset_count === 1 ? "" : "s"} with faces</div>` : "";
+    return `<div class="badge suggest">
+        <div>Suggestion <span class="big">≈ ${esc(e.label)}</span></div>
+        <div>90%: ${esc(e.range_label)} · <span class="conf-${e.confidence}">${e.confidence} confidence</span></div>
+        ${joint}${faces ? `<ul class="faces">${faces}</ul>` : ""}
+        <button type="button" class="accept" data-accept="${esc(a.id)}">Write this date</button>
+      </div>`;
+  }
+  if (a.dated) {
+    return a.dated.source === "manual"
+      ? `<div class="badge manual">Date set: <strong>${esc(a.dated.label)}</strong></div>`
+      : `<div class="badge estimated">Estimated: <strong>${esc(a.dated.label)}</strong></div>`;
+  }
+  return `<div class="muted">Not dated yet</div>`;
+}
+
+function render() {
+  if (!assets.length) {
+    grid.innerHTML = `<p class="muted">This album has no photos.</p>`;
+    updateSelection();
+    return;
+  }
+  grid.innerHTML = assets.map(a => {
+    const notes = a.estimate && a.estimate.notes && a.estimate.notes.length
+      ? `<div class="notes">${a.estimate.notes.map(esc).join(" · ")}</div>` : "";
+    const people = a.people.length ? `<div class="muted">${a.people.map(esc).join(", ")}</div>` : "";
+    return `<article class="card ${selected.has(a.id) ? "selected" : ""}" data-id="${esc(a.id)}">
+      <img src="/thumb/${esc(a.id)}" alt="" loading="lazy">
+      <span class="check"></span>
+      <a class="open" href="${esc(immichUrl)}/photos/${esc(a.id)}" target="_blank" rel="noopener" title="Open in Immich">↗</a>
+      <div class="body">
+        <div class="file" title="${esc(a.file_name)}">${esc(a.file_name)}</div>
+        <div class="muted">In Immich: ${yearOf(a.date)}</div>
+        ${people}
+        ${statusHtml(a)}
+        ${notes}
+      </div>
+    </article>`;
+  }).join("");
+  updateSelection();
+}
+
+function renderPeople(people) {
+  const strip = document.getElementById("people-strip");
+  if (!people.length) { strip.hidden = true; return; }
+  strip.hidden = false;
+  strip.innerHTML = `<span class="muted">People in this batch:</span>` + people.map(p => p.birth_date
+    ? `<span class="chip" title="${p.photos} photos">${esc(p.name)} · *${esc(p.birth_date.slice(0, 4))}</span>`
+    : `<span class="chip missing" data-person="${esc(p.id)}" data-name="${esc(p.name)}" title="Click to set a birthday">${esc(p.name)} · no birthday</span>`
+  ).join("");
+}
+
+function updateSelection() {
+  selCount.textContent = `${selected.size} of ${assets.length} selected`;
+  const withSuggestion = assets.some(a => selected.has(a.id) && a.estimate);
+  applyBtn.disabled = !assets.some(a => selected.has(a.id) && hasSuggestion(a));
+  discardBtn.disabled = !withSuggestion;
+  for (const card of grid.querySelectorAll(".card")) {
+    card.classList.toggle("selected", selected.has(card.dataset.id));
+  }
+}
+
+function selectedIds() {
+  return assets.filter(a => selected.has(a.id)).map(a => a.id);  // in display (file name) order
+}
+
+async function load() {
+  try {
+    const data = await api("GET", `/api/albums/${albumId}/assets`);
+    assets = data.assets;
+    const ids = new Set(assets.map(a => a.id));
+    for (const id of [...selected]) if (!ids.has(id)) selected.delete(id);
+    renderPeople(data.people);
+    render();
+  } catch (e) {
+    grid.innerHTML = `<p class="notice error">${esc(e.message)}</p>`;
+  }
+}
+
+async function runJob(label, url, body) {
+  try {
+    const job = await api("POST", url, body);
+    const result = await followJob(job, jobEl, label);
+    await load();
+    return result;
+  } catch (e) {
+    jobEl.hidden = false;
+    jobEl.classList.add("failed");
+    jobEl.textContent = e.message;
+    return null;
+  }
+}
+
+// --- selection ---------------------------------------------------------------------------
+
+grid.addEventListener("click", async (ev) => {
+  const accept = ev.target.closest("[data-accept]");
+  if (accept) {
+    await runJob("Writing date", "/api/apply-estimates", { asset_ids: [accept.dataset.accept] });
+    return;
+  }
+  if (ev.target.closest("a")) return;
+  const card = ev.target.closest(".card");
+  if (!card) return;
+  const id = card.dataset.id;
+  selected.has(id) ? selected.delete(id) : selected.add(id);
+  updateSelection();
+});
+
+document.querySelectorAll("[data-select]").forEach(btn => btn.addEventListener("click", () => {
+  const mode = btn.dataset.select;
+  selected.clear();
+  for (const a of assets) {
+    if (mode === "all" || (mode === "undated" && !a.dated) || (mode === "suggested" && hasSuggestion(a))) {
+      selected.add(a.id);
+    }
+  }
+  updateSelection();
+}));
+
+document.getElementById("people-strip").addEventListener("click", async (ev) => {
+  const chip = ev.target.closest("[data-person]");
+  if (!chip) return;
+  const value = prompt(`Birthday of ${chip.dataset.name} (YYYY-MM-DD):`);
+  if (!value) return;
+  try {
+    await api("PUT", `/api/people/${chip.dataset.person}/birthdate`, { birth_date: value.trim() });
+    await load();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+// --- known date --------------------------------------------------------------------------
+
+const knownInput = document.getElementById("known-date");
+const knownHint = document.getElementById("known-hint");
+let hintTimer = null;
+
+knownInput.addEventListener("input", () => {
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(async () => {
+    const text = knownInput.value.trim();
+    knownHint.classList.remove("error");
+    if (!text) { knownHint.textContent = "Year or month is enough."; return; }
+    const r = await api("GET", `/api/parse-date?text=${encodeURIComponent(text)}`);
+    if (r.ok) {
+      knownHint.textContent = `${r.label} (${r.precision}) → written as ${r.written}`;
+    } else {
+      knownHint.classList.add("error");
+      knownHint.textContent = r.error;
+    }
+  }, 250);
+});
+
+document.getElementById("known-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const ids = selectedIds();
+  if (!ids.length) { alert("Select photos first."); return; }
+  const already = assets.filter(a => selected.has(a.id) && a.dated).length;
+  if (already && !confirm(`${already} of the selected photos were already dated. Overwrite them?`)) return;
+  await runJob("Writing dates", "/api/known-date", {
+    asset_ids: ids, date: knownInput.value, keep_order: document.getElementById("keep-order").checked,
+  });
+});
+
+// --- estimation --------------------------------------------------------------------------
+
+document.getElementById("estimate-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const ids = selectedIds();
+  if (!ids.length) { alert("Select photos first."); return; }
+  await runJob("Analysing faces", "/api/estimate", {
+    asset_ids: ids,
+    joint: document.getElementById("joint").checked,
+    not_before: document.getElementById("not-before").value || null,
+    not_after: document.getElementById("not-after").value || null,
+  });
+});
+
+applyBtn.addEventListener("click", async () => {
+  const ids = assets.filter(a => selected.has(a.id) && hasSuggestion(a)).map(a => a.id);
+  if (!confirm(`Write the suggested dates of ${ids.length} photos to Immich?`)) return;
+  await runJob("Writing dates", "/api/apply-estimates", { asset_ids: ids });
+});
+
+discardBtn.addEventListener("click", async () => {
+  const ids = assets.filter(a => selected.has(a.id) && a.estimate).map(a => a.id);
+  await api("POST", "/api/discard-estimates", { asset_ids: ids });
+  await load();
+});
+
+load();

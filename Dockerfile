@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DATA_DIR=/data \
+    HF_HOME=/data/hf-cache
+
+# CPU-only PyTorch by default (small, runs everywhere). For an AMD GPU with ROCm, build with e.g.
+#   --build-arg TORCH_INDEX=https://download.pytorch.org/whl/rocm6.2
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
+RUN pip install torch --index-url ${TORCH_INDEX}
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install ".[mivolo]"
+
+VOLUME /data
+EXPOSE 8080
+CMD ["immich-age-guesser", "serve", "--port", "8080"]

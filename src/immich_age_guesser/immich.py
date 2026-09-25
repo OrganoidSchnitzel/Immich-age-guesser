@@ -1,0 +1,229 @@
+"""Minimal client for the parts of the Immich REST API this tool needs."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from typing import Any, Iterator
+
+import httpx
+
+
+class ImmichError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Person:
+    id: str
+    name: str
+    birth_date: date | None
+    is_hidden: bool = False
+
+    @classmethod
+    def from_api(cls, d: dict[str, Any]) -> "Person":
+        return cls(
+            id=d["id"],
+            name=d.get("name") or "",
+            birth_date=_parse_date(d.get("birthDate")),
+            is_hidden=bool(d.get("isHidden")),
+        )
+
+
+@dataclass(frozen=True)
+class Face:
+    id: str
+    person: Person | None
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    # Size of the image the bounding box refers to (Immich detects on the preview).
+    image_width: int
+    image_height: int
+
+    @classmethod
+    def from_api(cls, d: dict[str, Any]) -> "Face":
+        person = d.get("person")
+        return cls(
+            id=d["id"],
+            person=Person.from_api(person) if person else None,
+            x1=d["boundingBoxX1"],
+            y1=d["boundingBoxY1"],
+            x2=d["boundingBoxX2"],
+            y2=d["boundingBoxY2"],
+            image_width=d["imageWidth"],
+            image_height=d["imageHeight"],
+        )
+
+
+@dataclass
+class Asset:
+    id: str
+    file_name: str
+    type: str
+    # Local capture time as shown in the Immich timeline (naive).
+    local_datetime: datetime | None
+    # EXIF DateTimeOriginal and camera make, used to decide if a date is trustworthy.
+    exif_datetime: datetime | None = None
+    camera_make: str | None = None
+    camera_model: str | None = None
+    description: str = ""
+    people: list[Person] = field(default_factory=list)
+
+    @classmethod
+    def from_api(cls, d: dict[str, Any]) -> "Asset":
+        exif = d.get("exifInfo") or {}
+        return cls(
+            id=d["id"],
+            file_name=d.get("originalFileName") or "",
+            type=d.get("type") or "IMAGE",
+            local_datetime=_parse_naive_datetime(d.get("localDateTime")),
+            exif_datetime=_parse_naive_datetime(exif.get("dateTimeOriginal")),
+            camera_make=exif.get("make") or None,
+            camera_model=exif.get("model") or None,
+            description=exif.get("description") or "",
+            people=[Person.from_api(p) for p in d.get("people") or []],
+        )
+
+
+def _parse_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    return date.fromisoformat(value[:10])
+
+
+def _parse_naive_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    # Immich returns e.g. "1987-07-01T12:00:00.000Z"; localDateTime uses "Z" for a local time.
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+class ImmichClient:
+    def __init__(self, base_url: str, api_key: str, *, transport: httpx.BaseTransport | None = None,
+                 timeout: float = 60.0) -> None:
+        base = base_url.rstrip("/")
+        if not base.endswith("/api"):
+            base += "/api"
+        self._http = httpx.Client(
+            base_url=base,
+            headers={"x-api-key": api_key, "Accept": "application/json"},
+            timeout=timeout,
+            transport=transport,
+        )
+        self._send_timezone = True
+
+    def close(self) -> None:
+        self._http.close()
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        try:
+            resp = self._http.request(method, path, **kwargs)
+        except httpx.HTTPError as exc:
+            raise ImmichError(f"{method} {path} failed: {exc}") from exc
+        if resp.status_code >= 400:
+            detail = resp.text[:300]
+            raise ImmichError(f"{method} {path} returned {resp.status_code}: {detail}")
+        return resp
+
+    def _json(self, method: str, path: str, **kwargs: Any) -> Any:
+        resp = self._request(method, path, **kwargs)
+        return resp.json() if resp.content else None
+
+    # --- server ---------------------------------------------------------------------------
+
+    def server_version(self) -> str:
+        v = self._json("GET", "/server/version")
+        return f"{v['major']}.{v['minor']}.{v['patch']}"
+
+    # --- albums and assets ------------------------------------------------------------------
+
+    def albums(self) -> list[dict[str, Any]]:
+        return self._json("GET", "/albums")
+
+    def album(self, album_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/albums/{album_id}")
+
+    def find_album(self, name_or_id: str) -> dict[str, Any]:
+        for album in self.albums():
+            if album["id"] == name_or_id or album["albumName"] == name_or_id:
+                return album
+        raise ImmichError(f"No album named or with id '{name_or_id}'")
+
+    def search_assets(self, **filters: Any) -> Iterator[Asset]:
+        page: int | None = 1
+        while page is not None:
+            body = {"withExif": True, "withPeople": True, "size": 250, "page": page, **filters}
+            result = self._json("POST", "/search/metadata", json=body)["assets"]
+            for item in result["items"]:
+                yield Asset.from_api(item)
+            next_page = result.get("nextPage")
+            page = int(next_page) if next_page else None
+
+    def album_assets(self, album_id: str) -> list[Asset]:
+        assets = self.search_assets(albumIds=[album_id], type="IMAGE")
+        return sorted(assets, key=lambda a: a.file_name.lower())
+
+    def person_assets(self, person_id: str) -> Iterator[Asset]:
+        return self.search_assets(personIds=[person_id], type="IMAGE")
+
+    def asset(self, asset_id: str) -> Asset:
+        return Asset.from_api(self._json("GET", f"/assets/{asset_id}"))
+
+    def thumbnail(self, asset_id: str, size: str = "thumbnail") -> tuple[bytes, str]:
+        resp = self._request("GET", f"/assets/{asset_id}/thumbnail", params={"size": size},
+                             headers={"Accept": "*/*"})
+        return resp.content, resp.headers.get("content-type", "image/jpeg")
+
+    def original(self, asset_id: str) -> bytes:
+        return self._request("GET", f"/assets/{asset_id}/original", headers={"Accept": "*/*"}).content
+
+    def set_date(self, asset_ids: list[str], date_time_original: str, timezone: str | None) -> None:
+        body: dict[str, Any] = {"ids": asset_ids, "dateTimeOriginal": date_time_original}
+        if timezone and self._send_timezone:
+            try:
+                self._request("PUT", "/assets", json={**body, "timeZone": timezone})
+                return
+            except ImmichError as exc:
+                # Older Immich versions do not know the timeZone field.
+                if " 400:" not in str(exc):
+                    raise
+                self._send_timezone = False
+        self._request("PUT", "/assets", json=body)
+
+    def set_description(self, asset_id: str, description: str) -> None:
+        self._request("PUT", f"/assets/{asset_id}", json={"description": description})
+
+    # --- people and faces -------------------------------------------------------------------
+
+    def people(self) -> list[Person]:
+        people: list[Person] = []
+        page = 1
+        while True:
+            data = self._json("GET", "/people", params={"page": page, "size": 1000, "withHidden": "true"})
+            people.extend(Person.from_api(p) for p in data["people"])
+            if not data.get("hasNextPage"):
+                return people
+            page += 1
+
+    def set_birth_date(self, person_id: str, birth_date: date | None) -> Person:
+        body = {"birthDate": birth_date.isoformat() if birth_date else None}
+        return Person.from_api(self._json("PUT", f"/people/{person_id}", json=body))
+
+    def person_thumbnail(self, person_id: str) -> tuple[bytes, str]:
+        resp = self._request("GET", f"/people/{person_id}/thumbnail", headers={"Accept": "*/*"})
+        return resp.content, resp.headers.get("content-type", "image/jpeg")
+
+    def faces(self, asset_id: str) -> list[Face]:
+        return [Face.from_api(f) for f in self._json("GET", "/faces", params={"id": asset_id})]
+
+    # --- tags -------------------------------------------------------------------------------
+
+    def tag_assets(self, tag_value: str, asset_ids: list[str]) -> None:
+        tags = self._json("PUT", "/tags", json={"tags": [tag_value]})
+        tag = next((t for t in tags if t.get("value") == tag_value), tags[-1])
+        self._request("PUT", "/tags/assets", json={"tagIds": [tag["id"]], "assetIds": asset_ids})
