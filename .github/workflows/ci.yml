@@ -53,7 +53,8 @@ jobs:
 
       - name: Installed ML packages
         run: |
-          docker run --rm age-guesser:test sh -c 'pip list 2>/dev/null | grep -iE "^(torch|transformers|timm|opencv|numpy|huggingface)"; python -c "import torch, transformers, timm, cv2; from transformers import AutoImageProcessor"'
+          docker run --rm age-guesser:test sh -c 'pip list 2>/dev/null | grep -iE "^(torch|transformers|timm|opencv|numpy|huggingface)"; python -c "import torch, transformers, timm, cv2, mivolo.model.create_timm_model; from transformers import AutoImageProcessor"'
+          docker run --rm age-guesser:test python -c "from huggingface_hub import HfApi; print('mivolo_v2 revision:', HfApi().model_info('iitolstykh/mivolo_v2').sha)"
 
       - name: Smoke test (MiVOLO model loads and runs)
         run: docker run --rm age-guesser:test immich-age-guesser check-model
