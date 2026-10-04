@@ -9,7 +9,7 @@ from immich_age_guesser.web.app import create_app
 
 @pytest.fixture
 def client(guesser):
-    with TestClient(create_app(guesser)) as c:
+    with TestClient(create_app(guesser), headers={"X-Age-Guesser": "1"}) as c:
         yield c
 
 
@@ -99,3 +99,39 @@ def test_failed_job_reports_error(client, batch, guesser):
     guesser.estimate = boom
     job = wait(client, client.post("/api/estimate", json={"asset_ids": batch["ids"]}).json())
     assert job["status"] == "failed" and "model exploded" in job["error"]
+
+
+def test_write_and_remove_from_album(client, batch, fake):
+    ids = batch["ids"]
+    job = client.post("/api/known-date", json={"asset_ids": ids[:2], "date": "1986", "album_id": "scans",
+                                               "remove_from_album": True}).json()
+    result = wait(client, job)["result"]
+    assert result["written"] == 2 and result["removed"] == 2
+    assert fake.albums["scans"]["assets"] == [ids[2]]
+    assert fake.assets[ids[0]].exif_date.startswith("1986")  # the photo itself is untouched otherwise
+
+
+def test_estimates_removed_only_when_written(client, batch, fake):
+    ids = batch["ids"]
+    wait(client, client.post("/api/estimate", json={"asset_ids": ids}).json())
+    result = wait(client, client.post("/api/apply-estimates", json={
+        "asset_ids": ids, "album_id": "scans", "remove_from_album": True}).json())["result"]
+    assert result == {"written": 2, "skipped": 1, "removed": 2}
+    assert fake.albums["scans"]["assets"] == [ids[2]]  # the photo without a suggestion stays
+
+
+def test_no_removal_by_default(client, batch, fake):
+    job = client.post("/api/known-date", json={"asset_ids": batch["ids"], "date": "1986", "album_id": "scans"})
+    assert "removed" not in wait(client, job.json())["result"]
+    assert len(fake.albums["scans"]["assets"]) == 3
+
+
+def test_state_changes_need_the_csrf_header(guesser, batch):
+    with TestClient(create_app(guesser)) as c:
+        r = c.post("/api/known-date", json={"asset_ids": batch["ids"], "date": "1986"})
+        assert r.status_code == 403
+        assert c.get("/api/albums/scans/assets").status_code == 200
+
+
+def test_healthz(client):
+    assert client.get("/healthz").json() == {"ok": True, "configured": True}

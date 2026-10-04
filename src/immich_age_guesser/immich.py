@@ -195,6 +195,11 @@ class ImmichClient:
                 self._send_timezone = False
         self._request("PUT", "/assets", json=body)
 
+    def remove_from_album(self, album_id: str, asset_ids: list[str]) -> int:
+        """Remove assets from an album (they stay in the library). Returns how many were removed."""
+        result = self._json("DELETE", f"/albums/{album_id}/assets", json={"ids": asset_ids})
+        return sum(1 for r in result or [] if r.get("success") or r.get("error") == "not_found")
+
     def set_description(self, asset_id: str, description: str) -> None:
         self._request("PUT", f"/assets/{asset_id}", json={"description": description})
 

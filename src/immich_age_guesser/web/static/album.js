@@ -44,7 +44,7 @@ function statusHtml(a) {
 
 function render() {
   if (!assets.length) {
-    grid.innerHTML = `<p class="muted">This album has no photos.</p>`;
+    grid.innerHTML = `<p class="muted">This album is empty. If you are reusing it as a working album, upload the next batch of scans into it in Immich.</p>`;
     updateSelection();
     return;
   }
@@ -105,11 +105,32 @@ async function load() {
   }
 }
 
+const resultEl = document.getElementById("job-result");
+const removeBox = document.getElementById("remove-from-album");
+
+/** Fields for requests that write dates: the album to clean up, if the user wants that. */
+function writeOptions() {
+  return { album_id: albumId, remove_from_album: removeBox.checked };
+}
+
+function showResult(result) {
+  if (!result || result.written === undefined) { resultEl.hidden = true; return; }
+  const parts = [`Wrote ${result.written} date${result.written === 1 ? "" : "s"}`];
+  if (result.skipped) parts.push(`${result.skipped} skipped (no suggestion)`);
+  if (result.removed !== undefined) parts.push(`${result.removed} removed from this album`);
+  if (result.remove_error) parts.push(`removing from the album failed: ${result.remove_error}`);
+  resultEl.textContent = parts.join(" · ");
+  resultEl.classList.toggle("warn", Boolean(result.remove_error));
+  resultEl.hidden = false;
+}
+
 async function runJob(label, url, body) {
+  resultEl.hidden = true;
   try {
     const job = await api("POST", url, body);
     const result = await followJob(job, jobEl, label);
     await load();
+    showResult(result);
     return result;
   } catch (e) {
     jobEl.hidden = false;
@@ -124,7 +145,7 @@ async function runJob(label, url, body) {
 grid.addEventListener("click", async (ev) => {
   const accept = ev.target.closest("[data-accept]");
   if (accept) {
-    await runJob("Writing date", "/api/apply-estimates", { asset_ids: [accept.dataset.accept] });
+    await runJob("Writing date", "/api/apply-estimates", { asset_ids: [accept.dataset.accept], ...writeOptions() });
     return;
   }
   if (ev.target.closest("a")) return;
@@ -189,6 +210,7 @@ document.getElementById("known-form").addEventListener("submit", async (ev) => {
   if (already && !confirm(`${already} of the selected photos were already dated. Overwrite them?`)) return;
   await runJob("Writing dates", "/api/known-date", {
     asset_ids: ids, date: knownInput.value, keep_order: document.getElementById("keep-order").checked,
+    ...writeOptions(),
   });
 });
 
@@ -209,7 +231,7 @@ document.getElementById("estimate-form").addEventListener("submit", async (ev) =
 applyBtn.addEventListener("click", async () => {
   const ids = assets.filter(a => selected.has(a.id) && hasSuggestion(a)).map(a => a.id);
   if (!confirm(`Write the suggested dates of ${ids.length} photos to Immich?`)) return;
-  await runJob("Writing dates", "/api/apply-estimates", { asset_ids: ids });
+  await runJob("Writing dates", "/api/apply-estimates", { asset_ids: ids, ...writeOptions() });
 });
 
 discardBtn.addEventListener("click", async () => {

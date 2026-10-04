@@ -61,6 +61,8 @@ class FakeImmich:
         self.date_updates: list[dict[str, Any]] = []
         self.original_downloads = 0
         self.reject_timezone = False
+        self.api_key = "key"
+        self.denied_paths: set[str] = set()  # simulate missing API key permissions
 
     # --- setup helpers ---------------------------------------------------------------------
 
@@ -121,6 +123,10 @@ class FakeImmich:
         body = json.loads(request.content) if request.content else None
         q = request.url.params
 
+        if request.headers.get("x-api-key") != self.api_key:
+            return httpx.Response(401, json={"message": "Invalid API key"})
+        if path in self.denied_paths:
+            return httpx.Response(403, json={"message": "Missing required permission"})
         if path == "/server/version":
             return httpx.Response(200, json={"major": 3, "minor": 2, "patch": 0})
         if path == "/albums" and method == "GET":
@@ -128,6 +134,16 @@ class FakeImmich:
                 {"id": a["id"], "albumName": a["albumName"], "assetCount": len(a["assets"]),
                  "albumThumbnailAssetId": a["assets"][0] if a["assets"] else None}
                 for a in self.albums.values()])
+        if (m := re.fullmatch(r"/albums/([^/]+)/assets", path)) and method == "DELETE":
+            album = self.albums[m[1]]
+            out = []
+            for aid in body["ids"]:
+                if aid in album["assets"]:
+                    album["assets"].remove(aid)
+                    out.append({"id": aid, "success": True})
+                else:
+                    out.append({"id": aid, "success": False, "error": "not_found"})
+            return httpx.Response(200, json=out)
         if m := re.fullmatch(r"/albums/([^/]+)", path):
             album = self.albums.get(m[1])
             return httpx.Response(200, json={**album, "assetCount": len(album["assets"])}) if album \

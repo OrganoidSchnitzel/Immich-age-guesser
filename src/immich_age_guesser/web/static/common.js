@@ -3,7 +3,7 @@
 async function api(method, url, body) {
   const resp = await fetch(url, {
     method,
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    headers: body === undefined ? { "X-Age-Guesser": "1" } : { "Content-Type": "application/json", "X-Age-Guesser": "1" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = resp.headers.get("content-type")?.includes("json") ? await resp.json() : await resp.text();

@@ -9,7 +9,10 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/">Immich Age Guesser</a>
-    <nav><a href="/">Batches</a><a href="/people">People &amp; birthdays</a></nav>
+    <nav>
+      {% if configured %}<a href="/">Batches</a><a href="/people">People &amp; birthdays</a>{% endif %}
+      <a href="/settings">Settings</a>
+    </nav>
   </header>
   <main>{% block content %}{% endblock %}</main>
   {% block scripts %}{% endblock %}

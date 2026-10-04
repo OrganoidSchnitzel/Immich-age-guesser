@@ -43,7 +43,12 @@ photos that have faces and tick *same event*.
 
 ## Workflow
 
-1. Scan photos and upload each batch (a box, an album, a film) into **its own Immich album**.
+1. Scan photos and upload them into an **Immich album**. There are two ways to organise this:
+   - **One working album** (e.g. "Scans – to date") that you reuse for every batch. Tick
+     *Remove photos from this album once their date is written*: dated photos leave the album
+     but stay in Immich, so the album only ever holds what is left to do.
+   - **One album per batch** (a box, an album, a film), which you can delete when you are done.
+     Deleting an album in Immich never deletes its photos.
 2. Wait for Immich's face detection, then name the people in Immich.
 3. Open the tool, go to **People & birthdays**, and fill in the missing birthdays. They are saved
    in Immich.
@@ -62,41 +67,62 @@ Written photos get the tag `Age Guesser/Manual` or `Age Guesser/Estimated`, so y
 in Immich later. Estimated photos also get a line in their description, for example:
 `Date estimated by Immich Age Guesser: 1987 (90% range 1985–1989; Anna ≈ 7 y, Bernd ≈ 36 y)`.
 Immich has no field for "approximate date". A year is written as 2 July, the middle of the year;
-set `DATE_ANCHOR=start` for 1 January instead.
+this can be switched to 1 January in the settings.
 
-## Setup
+## Installation
 
-### 1. Immich API key
+A ready-made Docker image is published at `ghcr.io/organoidschnitzel/immich-age-guesser`.
+Everything else is set up in the browser.
 
-In Immich, open *Account Settings → API Keys* and create a key with these permissions:
+### Option A: next to Immich, in Immich's own `docker-compose.yml` (recommended)
 
-`album.read`, `asset.read`, `asset.view`, `asset.download`, `asset.update`, `face.read`,
-`person.read`, `person.update`, `tag.create`, `tag.asset`
+Add this service to the `services:` section of the `docker-compose.yml` you run Immich with:
 
-### 2. Run with Docker (recommended, e.g. on the home server)
-
-```bash
-cp .env.example .env              # set IMMICH_URL and IMMICH_API_KEY
-cp docker-compose.example.yml docker-compose.yml
-docker compose up -d --build
-docker compose exec age-guesser immich-age-guesser check   # tests Immich + the model
+```yaml
+  immich-age-guesser:
+    container_name: immich_age_guesser
+    image: ghcr.io/organoidschnitzel/immich-age-guesser:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./age-guesser-data:/data
+    restart: always
 ```
 
-Then open `http://<server>:8080`. The first estimate downloads the MiVOLO weights (~100 MB) into
-`./data/hf-cache`.
+Then run `docker compose up -d` in that folder, open `http://<server>:8080` and fill in the
+setup page. Use **`http://immich-server:2283`** as the Immich URL: both containers share Immich's
+network, so the tool reaches Immich by its service name.
+
+### Option B: on its own
+
+Download [`docker-compose.yml`](docker-compose.yml) into an empty folder, run
+`docker compose up -d`, and open `http://<server>:8080`. Use your server's address as the
+Immich URL, e.g. `http://192.168.1.10:2283`.
+
+### The setup page
+
+The first visit opens the setup page:
+
+1. In Immich, open *Account Settings → API Keys* and create a key. Either give it all permissions
+   or these: `album.read`, `albumAsset.delete`, `asset.read`, `asset.view`, `asset.download`,
+   `asset.update`, `face.read`, `person.read`, `person.update`, `tag.create`, `tag.asset`.
+2. Paste the URL and the key, click **Test connection**, then **Save**.
+
+You can change everything later under **Settings**. The settings, the tool's records and the
+downloaded model (about 100 MB, fetched on the first estimate) live in the `/data` volume.
 
 > The web UI has no login of its own and holds an API key that can change your photos. Only
 > expose it on your LAN, or put it behind your reverse proxy's authentication.
 
-### Or run with plain Python (3.10+)
+**Updating:** `docker compose pull && docker compose up -d`.
+
+### Without Docker (Python 3.10+)
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -e ".[mivolo]"
-set -a; . ./.env; set +a
-immich-age-guesser check
-immich-age-guesser serve --port 8080
+immich-age-guesser serve --port 8080      # then open http://localhost:8080
 ```
 
 ### CPU or GPU?
@@ -104,35 +130,43 @@ immich-age-guesser serve --port 8080
 Use the **CPU of the home server**. Age estimation is a small model: roughly 0.1–0.3 s per face
 on an i5-13500, so a batch of 500 scans takes minutes. It runs next to Immich and is always
 available, with no dual-boot involved. A GPU is only worth it for tens of thousands of photos. To
-use the RX 6800 anyway, build the image with a ROCm PyTorch
-(`--build-arg TORCH_INDEX=https://download.pytorch.org/whl/rocm6.2`), pass the GPU into the
-container (`/dev/kfd`, `/dev/dri`) and set `DEVICE=cuda`. PyTorch uses the same name for ROCm.
+use the RX 6800 anyway, build the image yourself with a ROCm PyTorch
+(`docker build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/rocm6.2 .`), pass the GPU
+into the container (`/dev/kfd`, `/dev/dri`) and set the device to `cuda`. PyTorch uses the same
+name for ROCm.
 
 ## Command line
 
-Everything the UI does is also available on the command line:
+Everything the UI does is also available on the command line, e.g. with
+`docker exec -it immich_age_guesser immich-age-guesser …`:
 
 ```bash
-immich-age-guesser set-date  --album "Box 3" --date 1987
-immich-age-guesser estimate  --album "Box 3" [--joint] [--not-before 1975] [--not-after 1995] [--apply]
-immich-age-guesser calibrate [--per-person 60]
-immich-age-guesser check     [--image face.jpg]
+immich-age-guesser set-date    --album "Box 3" --date 1987 [--remove-from-album]
+immich-age-guesser estimate    --album "Box 3" [--joint] [--not-before 1975] [--not-after 1995] [--apply [--remove-from-album]]
+immich-age-guesser calibrate   [--per-person 60]
+immich-age-guesser check       [--image face.jpg]   # tests the Immich connection and the model
+immich-age-guesser check-model [--image face.jpg]   # tests only the model
 ```
 
 `estimate` without `--apply` only stores suggestions. You can review them in the UI.
 
 ## Configuration
 
-See [`.env.example`](.env.example). The most important settings:
+Normally everything is set on the **Settings** page and stored in `/data/config.json`.
+Alternatively, any setting can be given as an environment variable (see
+[`.env.example`](.env.example)). A setting given by an environment variable takes precedence and
+is shown read-only on the Settings page.
 
 | Variable | Default | |
 |---|---|---|
-| `IMMICH_URL`, `IMMICH_API_KEY` | – | required |
-| `TIMEZONE` | `UTC` | time zone for written dates, e.g. `Europe/Berlin` |
+| `IMMICH_URL`, `IMMICH_API_KEY` | – | Immich server and API key |
+| `TIMEZONE` (or `TZ`) | `UTC` | time zone for written dates, e.g. `Europe/Berlin` |
 | `DATE_ANCHOR` | `middle` | `middle` or `start` of a year/month |
+| `REMOVE_FROM_ALBUM` | `false` | default for "remove photos from this album once dated" |
 | `AGE_ESTIMATOR` | `mivolo` | or `ollama` (then `OLLAMA_URL`, `OLLAMA_MODEL`) |
 | `TAG_ROOT` | `Age Guesser` | empty to disable tagging |
 | `WRITE_DESCRIPTION` | `true` | add the explanation line to estimated photos |
+| `DATA_DIR` | `/data` in Docker | where settings, records and the model are stored |
 
 ## Good to know
 
@@ -144,8 +178,8 @@ See [`.env.example`](.env.example). The most important settings:
   this tool do count as ground truth.
 - **Age models have biases.** They can be off for faded black-and-white prints, strong makeup,
   costumes, and some ethnicities or age groups. Calibration corrects part of this, per person too.
-- **Local data.** The tool keeps its own records in `DATA_DIR`: cached face ages, pending
-  suggestions, and what was written. Deleting the folder loses no data in Immich.
+- **Local data.** The tool keeps its settings and its own records in `DATA_DIR`: cached face
+  ages, pending suggestions, and what was written. Deleting the folder loses no data in Immich.
 - **MiVOLO license.** MiVOLO's code and weights have their own license. See the `license` folder
   of its repository before using it for anything beyond private use.
 
@@ -158,5 +192,5 @@ pytest
 
 The tests run the whole pipeline against a fake Immich server (`tests/conftest.py`) and a fake age
 model that reads ages from the test images. That covers cropping, inference, calibration, the
-write-back and the web API. The MiVOLO adapter itself is not covered by tests, so use
-`immich-age-guesser check` to verify it on real hardware.
+write-back, the setup page and the web API. In addition, CI builds the Docker image, starts it,
+and runs `immich-age-guesser check-model`, which downloads the real MiVOLO model and runs it once.

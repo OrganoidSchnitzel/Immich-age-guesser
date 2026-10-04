@@ -1,23 +1,51 @@
-"""Settings, read from environment variables (see .env.example)."""
+"""Settings: defaults, overridden by `<DATA_DIR>/config.json` (written by the setup page), overridden
+by environment variables (see .env.example)."""
 
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+CONFIG_FILE = "config.json"
 
-def _bool(value: str | None, default: bool) -> bool:
-    if value is None or value == "":
-        return default
+# Setting name -> environment variable.
+ENV_NAMES = {
+    "immich_url": "IMMICH_URL",
+    "immich_api_key": "IMMICH_API_KEY",
+    "immich_public_url": "IMMICH_PUBLIC_URL",
+    "estimator": "AGE_ESTIMATOR",
+    "device": "DEVICE",
+    "mivolo_model": "MIVOLO_MODEL",
+    "ollama_url": "OLLAMA_URL",
+    "ollama_model": "OLLAMA_MODEL",
+    "timezone": "TIMEZONE",
+    "date_anchor": "DATE_ANCHOR",
+    "tag_root": "TAG_ROOT",
+    "write_description": "WRITE_DESCRIPTION",
+    "remove_from_album": "REMOVE_FROM_ALBUM",
+    "min_face_px": "MIN_FACE_PX",
+    "use_original_for_small_faces": "USE_ORIGINAL_FOR_SMALL_FACES",
+}
+
+# Text settings for which "" is a real value; for the others "" means "use the default".
+_EMPTY_ALLOWED = {"immich_url", "immich_api_key", "immich_public_url", "tag_root"}
+
+ESTIMATORS = ("mivolo", "ollama")
+DATE_ANCHORS = ("middle", "start")
+
+
+def _bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
 class Settings:
-    immich_url: str
-    immich_api_key: str
+    immich_url: str = ""
+    immich_api_key: str = ""
     # URL the browser uses to open photos in Immich (defaults to immich_url).
     immich_public_url: str = ""
     data_dir: Path = Path("data")
@@ -31,49 +59,104 @@ class Settings:
 
     # Writing dates back to Immich.
     timezone: str = "UTC"
-    # "middle": "1987" becomes 1 July 1987, "start": 1 January 1987.
+    # "middle": "1987" becomes 2 July 1987, "start": 1 January 1987.
     date_anchor: str = "middle"
     # Tag root for processed photos ("Age Guesser/Manual", ".../Estimated"). Empty disables tagging.
     tag_root: str = "Age Guesser"
     write_description: bool = True
+    # Default of the album page option: take photos out of the album once their date is written.
+    remove_from_album: bool = False
 
     # Faces smaller than this (in the preview) are re-cropped from the original file.
     min_face_px: int = 64
     use_original_for_small_faces: bool = True
 
     @property
+    def configured(self) -> bool:
+        return bool(self.immich_url and self.immich_api_key)
+
+    @property
     def public_url(self) -> str:
         return (self.immich_public_url or self.immich_url).rstrip("/")
 
+    @property
+    def config_path(self) -> Path:
+        return self.data_dir / CONFIG_FILE
+
+    # --- loading ----------------------------------------------------------------------------
+
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
+    def load(cls, env: Mapping[str, str] | None = None) -> "Settings":
+        """Defaults < config.json < environment. Raises ValueError for invalid values."""
         e = os.environ if env is None else env
-        url = e.get("IMMICH_URL", "").strip()
-        key = e.get("IMMICH_API_KEY", "").strip()
-        if not url or not key:
-            raise SystemExit("IMMICH_URL and IMMICH_API_KEY must be set (see .env.example).")
-        defaults = cls(immich_url=url, immich_api_key=key)
-        settings = cls(
-            immich_url=url.rstrip("/"),
-            immich_api_key=key,
-            immich_public_url=e.get("IMMICH_PUBLIC_URL", "").strip(),
-            data_dir=Path(e.get("DATA_DIR", str(defaults.data_dir))),
-            estimator=e.get("AGE_ESTIMATOR", defaults.estimator).strip().lower(),
-            device=e.get("DEVICE", defaults.device).strip(),
-            mivolo_model=e.get("MIVOLO_MODEL", defaults.mivolo_model).strip(),
-            ollama_url=e.get("OLLAMA_URL", defaults.ollama_url).strip().rstrip("/"),
-            ollama_model=e.get("OLLAMA_MODEL", defaults.ollama_model).strip(),
-            timezone=e.get("TIMEZONE", e.get("TZ", defaults.timezone)).strip() or "UTC",
-            date_anchor=e.get("DATE_ANCHOR", defaults.date_anchor).strip().lower(),
-            tag_root=e.get("TAG_ROOT", defaults.tag_root).strip().strip("/"),
-            write_description=_bool(e.get("WRITE_DESCRIPTION"), defaults.write_description),
-            min_face_px=int(e.get("MIN_FACE_PX", defaults.min_face_px)),
-            use_original_for_small_faces=_bool(
-                e.get("USE_ORIGINAL_FOR_SMALL_FACES"), defaults.use_original_for_small_faces
-            ),
-        )
-        try:
-            ZoneInfo(settings.timezone)
-        except (ZoneInfoNotFoundError, ValueError):
-            raise SystemExit(f"Unknown TIMEZONE '{settings.timezone}' (use an IANA name like Europe/Berlin).")
+        data_dir = Path(e.get("DATA_DIR") or cls.data_dir)
+        values: dict[str, Any] = {}
+        path = data_dir / CONFIG_FILE
+        if path.exists():
+            values.update(json.loads(path.read_text()))
+        for name in env_overrides(e):
+            values[name] = e[ENV_NAMES[name]]
+        if "timezone" not in values and e.get("TZ"):
+            values["timezone"] = e["TZ"]
+        settings = cls(data_dir=data_dir).with_values(values)
+        settings.validate()
         return settings
+
+    def with_values(self, values: Mapping[str, Any]) -> "Settings":
+        """Copy with the given settings (strings from env/forms are converted), unknown keys ignored."""
+        changes: dict[str, Any] = {}
+        for f in fields(self):
+            if f.name not in values or f.name == "data_dir":
+                continue
+            default, value = getattr(Settings, f.name), values[f.name]
+            if isinstance(default, bool):
+                value = _bool(value) if isinstance(value, str) else bool(value)
+            elif isinstance(default, int):
+                value = int(value)
+            else:
+                value = str(value if value is not None else "").strip()
+                if not value and f.name not in _EMPTY_ALLOWED:
+                    value = default
+            changes[f.name] = value
+        s = replace(self, **changes)
+        return replace(
+            s,
+            immich_url=s.immich_url.rstrip("/"),
+            ollama_url=s.ollama_url.rstrip("/"),
+            estimator=s.estimator.lower(),
+            date_anchor=s.date_anchor.lower(),
+            tag_root=s.tag_root.strip("/"),
+            timezone=s.timezone or "UTC",
+        )
+
+    def validate(self) -> None:
+        if self.immich_url and not self.immich_url.startswith(("http://", "https://")):
+            raise ValueError(f"The Immich URL must start with http:// or https:// (got '{self.immich_url}').")
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"Unknown time zone '{self.timezone}' (use a name like Europe/Berlin).") from None
+        if self.estimator not in ESTIMATORS:
+            raise ValueError(f"Unknown age model '{self.estimator}' (use {' or '.join(ESTIMATORS)}).")
+        if self.date_anchor not in DATE_ANCHORS:
+            raise ValueError(f"Unknown date anchor '{self.date_anchor}' (use middle or start).")
+        if self.min_face_px < 1:
+            raise ValueError("The minimum face size must be positive.")
+
+    def save(self, exclude: set[str] = frozenset()) -> None:
+        """Write the settings to config.json (owner-readable only: it holds the API key).
+
+        `exclude` names settings that come from environment variables and must not be persisted.
+        """
+        data = {k: v for k, v in asdict(self).items() if k != "data_dir" and k not in exclude}
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.config_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.chmod(0o600)
+        tmp.replace(self.config_path)
+
+
+def env_overrides(env: Mapping[str, str] | None = None) -> set[str]:
+    """Settings fixed by environment variables (the setup page shows them read-only)."""
+    e = os.environ if env is None else env
+    return {name for name, var in ENV_NAMES.items() if e.get(var, "") != ""}

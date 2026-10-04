@@ -9,14 +9,14 @@ from pathlib import Path
 
 from .config import Settings
 from .dates import parse_date_spec, parse_year_bound
-from .immich import ImmichClient
-from .service import AgeGuesser
-from .store import Store
+from .service import AgeGuesser, build_guesser
 
 
 def _guesser(settings: Settings) -> AgeGuesser:
-    immich = ImmichClient(settings.immich_url, settings.immich_api_key)
-    return AgeGuesser(settings, immich, Store(settings.data_dir / "age-guesser.sqlite"))
+    if not settings.configured:
+        raise SystemExit("Not set up yet: open the web UI (immich-age-guesser serve) and fill in the "
+                         "Settings page, or set IMMICH_URL and IMMICH_API_KEY.")
+    return build_guesser(settings)
 
 
 def _progress(label: str):
@@ -30,7 +30,9 @@ def cmd_serve(args: argparse.Namespace, settings: Settings) -> None:
 
     from .web.app import create_app
 
-    uvicorn.run(create_app(_guesser(settings)), host=args.host, port=args.port)
+    if not settings.configured:
+        print(f"Not set up yet: open http://<this machine>:{args.port}/settings in your browser.", file=sys.stderr)
+    uvicorn.run(create_app(settings=settings), host=args.host, port=args.port)
 
 
 def cmd_check(args: argparse.Namespace, settings: Settings) -> None:
@@ -53,14 +55,32 @@ def cmd_check(args: argparse.Namespace, settings: Settings) -> None:
     print("Calibration:", "yes" if g.calibration_summary()["calibrated"] else "not yet (run `calibrate`)")
 
 
+def cmd_check_model(args: argparse.Namespace, settings: Settings) -> None:
+    """Load the age model and run it once; needs no Immich connection."""
+    from PIL import Image
+
+    from .estimators import backend_name, create_estimator
+    from .faces import load_image
+
+    print(f"Loading age model {backend_name(settings)} on {settings.device} …")
+    estimator = create_estimator(settings)
+    img = load_image(Path(args.image).read_bytes()) if args.image else Image.new("RGB", (224, 224), (150, 120, 100))
+    age = estimator.estimate([img])[0]
+    if not 0 <= age <= 120:
+        raise SystemExit(f"The model returned an implausible age: {age}")
+    print(f"Model works. Estimated age{' of ' + args.image if args.image else ' (plain test image)'}: {age:.1f}")
+
+
 def cmd_set_date(args: argparse.Namespace, settings: Settings) -> None:
     g = _guesser(settings)
     spec = parse_date_spec(args.date)
     album = g.immich.find_album(args.album)
     ids = [a.id for a in g.immich.album_assets(album["id"])]
     print(f"Writing {spec.label} to {len(ids)} photos in '{album['albumName']}'")
-    result = g.apply_known_date(ids, spec, keep_order=not args.no_keep_order, progress=_progress("Writing"))
-    print(f"Done: {result['written']} photos dated {result['date']}")
+    result = g.apply_known_date(ids, spec, keep_order=not args.no_keep_order,
+                                remove_from_album=album["id"] if args.remove_from_album else None,
+                                progress=_progress("Writing"))
+    print(f"Done: {result['written']} photos dated {result['date']}" + _removed(result))
 
 
 def cmd_estimate(args: argparse.Namespace, settings: Settings) -> None:
@@ -79,10 +99,17 @@ def cmd_estimate(args: argparse.Namespace, settings: Settings) -> None:
         line = f"≈ {est['label']:>8}  ({est['range_label']}, {est['confidence']})" if est else f"  –  {res['message']}"
         print(f"{names[aid][:40]:40} {line}")
     if args.apply:
-        out = g.apply_estimates(ids, progress=_progress("Writing"))
-        print(f"Wrote {out['written']} dates, skipped {out['skipped']}")
+        out = g.apply_estimates(ids, remove_from_album=album["id"] if args.remove_from_album else None,
+                                progress=_progress("Writing"))
+        print(f"Wrote {out['written']} dates, skipped {out['skipped']}" + _removed(out))
     else:
         print("Suggestions saved. Review them in the web UI, or re-run with --apply to write them.")
+
+
+def _removed(result: dict) -> str:
+    if "remove_error" in result:
+        return f"; removing from the album failed: {result['remove_error']}"
+    return f"; {result['removed']} removed from the album" if "removed" in result else ""
 
 
 def cmd_calibrate(args: argparse.Namespace, settings: Settings) -> None:
@@ -111,10 +138,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--image", help="a face photo to run the model on")
     p.set_defaults(fn=cmd_check)
 
+    p = sub.add_parser("check-model", help="load the age model and run it once (no Immich needed)")
+    p.add_argument("--image", help="a face photo to run the model on")
+    p.set_defaults(fn=cmd_check_model)
+
     p = sub.add_parser("set-date", help="write a known date to every photo of an album")
     p.add_argument("--album", required=True, help="album name or id")
     p.add_argument("--date", required=True, help="e.g. 1987, 06.1987, 14.06.1987, 1985-1989, 1980s")
     p.add_argument("--no-keep-order", action="store_true", help="give all photos the exact same time")
+    p.add_argument("--remove-from-album", action="store_true", help="take the photos out of the album afterwards")
     p.set_defaults(fn=cmd_set_date)
 
     p = sub.add_parser("estimate", help="estimate dates of the photos in an album")
@@ -124,6 +156,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--not-after", help="latest possible year/date")
     p.add_argument("--include-dated", action="store_true", help="also re-estimate photos dated by this tool")
     p.add_argument("--apply", action="store_true", help="write the estimates to Immich right away")
+    p.add_argument("--remove-from-album", action="store_true",
+                   help="with --apply: take dated photos out of the album")
     p.set_defaults(fn=cmd_estimate)
 
     p = sub.add_parser("calibrate", help="learn the model's errors from photos with known dates")
@@ -134,7 +168,11 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    args.fn(args, Settings.from_env())
+    try:
+        settings = Settings.load()
+    except ValueError as exc:
+        raise SystemExit(f"Invalid setting: {exc}") from exc
+    args.fn(args, settings)
 
 
 if __name__ == "__main__":

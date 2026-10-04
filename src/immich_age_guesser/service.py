@@ -58,6 +58,11 @@ class AgeGuesser:
                 self._estimator = self._estimator_factory(self.settings)
             return self._estimator
 
+    def adopt_model(self, other: "AgeGuesser") -> None:
+        """Reuse an already loaded model of another instance with the same backend (after a settings change)."""
+        if (other.backend, other.settings.device) == (self.backend, self.settings.device) and other._estimator:
+            self._estimator = other._estimator
+
     @property
     def calibration_path(self) -> Path:
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", self.backend).strip("-")
@@ -129,8 +134,11 @@ class AgeGuesser:
     # --- known dates ------------------------------------------------------------------------
 
     def apply_known_date(self, asset_ids: list[str], spec: DateSpec, *, keep_order: bool = True,
-                         progress: Progress = _noop) -> dict[str, Any]:
-        """Write a date the user knows to the assets (in the given order)."""
+                         remove_from_album: str | None = None, progress: Progress = _noop) -> dict[str, Any]:
+        """Write a date the user knows to the assets (in the given order).
+
+        With `remove_from_album`, the dated assets are taken out of that album afterwards.
+        """
         day = spec.anchor(self.settings.date_anchor)
         tz = self.settings.timezone
         total = len(asset_ids)
@@ -147,7 +155,8 @@ class AgeGuesser:
             self.store.save_dated(DatedRecord(aid, "manual", spec.label, spec.precision, spec.start, spec.end, day))
         self.store.delete_estimates(asset_ids)
         self._tag("Manual", asset_ids)
-        return {"written": total, "date": day.isoformat(), "label": spec.label}
+        return {"written": total, "date": day.isoformat(), "label": spec.label,
+                **self._remove_from_album(remove_from_album, asset_ids)}
 
     # --- estimation -------------------------------------------------------------------------
 
@@ -201,7 +210,8 @@ class AgeGuesser:
             self.store.save_estimate(aid, res)
         return results
 
-    def apply_estimates(self, asset_ids: list[str], *, progress: Progress = _noop) -> dict[str, Any]:
+    def apply_estimates(self, asset_ids: list[str], *, remove_from_album: str | None = None,
+                        progress: Progress = _noop) -> dict[str, Any]:
         """Write stored estimates (median date) to Immich. Assets without an estimate are skipped."""
         stored = self.store.estimates(asset_ids)
         todo = [aid for aid in asset_ids if (stored.get(aid) or {}).get("status") == "ok"]
@@ -219,7 +229,8 @@ class AgeGuesser:
             progress(i + 1, len(todo))
         self.store.delete_estimates(todo)
         self._tag("Estimated", todo)
-        return {"written": len(todo), "skipped": len(asset_ids) - len(todo)}
+        return {"written": len(todo), "skipped": len(asset_ids) - len(todo),
+                **self._remove_from_album(remove_from_album, todo)}
 
     def _write_description(self, asset_id: str, est: DateEstimate) -> None:
         people = ", ".join(f"{o.person_name} ≈ {o.estimated_age:.0f} y" for o in est.observations
@@ -228,6 +239,19 @@ class AgeGuesser:
         current = self.immich.asset(asset_id).description
         kept = [ln for ln in current.splitlines() if not ln.startswith(DESCRIPTION_PREFIX)]
         self.immich.set_description(asset_id, "\n".join([*kept, line]).strip())
+
+    def _remove_from_album(self, album_id: str | None, asset_ids: list[str]) -> dict[str, Any]:
+        """Take dated assets out of the working album. The photos themselves stay in Immich."""
+        if not album_id or not asset_ids:
+            return {}
+        removed = 0
+        try:
+            for i in range(0, len(asset_ids), _BULK):
+                removed += self.immich.remove_from_album(album_id, asset_ids[i:i + _BULK])
+        except Exception as exc:  # the dates are written; only the clean-up failed
+            log.warning("Removing from album %s failed: %s", album_id, exc)
+            return {"removed": removed, "remove_error": str(exc)}
+        return {"removed": removed}
 
     def _tag(self, name: str, asset_ids: list[str]) -> None:
         if not self.settings.tag_root or not asset_ids:
@@ -302,3 +326,9 @@ class AgeGuesser:
 
 def report_dict(report: CalibrationReport) -> dict[str, Any]:
     return asdict(report)
+
+
+def build_guesser(settings: Settings) -> AgeGuesser:
+    """An AgeGuesser talking to the configured Immich server, with its local store in DATA_DIR."""
+    immich = ImmichClient(settings.immich_url, settings.immich_api_key)
+    return AgeGuesser(settings, immich, Store(settings.data_dir / "age-guesser.sqlite"))

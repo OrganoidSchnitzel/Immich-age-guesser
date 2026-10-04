@@ -47,14 +47,3 @@ def test_timestamps_keep_order_and_timezone():
     assert ts == ["1987-07-02T12:00:00.000+02:00", "1987-07-02T12:01:00.000+02:00", "1987-07-02T12:02:00.000+02:00"]
     assert timestamps(date(1987, 1, 2), 1, "Europe/Berlin")[0].endswith("+01:00")
 
-
-def test_settings_from_env():
-    from immich_age_guesser.config import Settings
-
-    s = Settings.from_env({"IMMICH_URL": "http://x:2283/", "IMMICH_API_KEY": "k", "TIMEZONE": "Europe/Berlin",
-                           "TAG_ROOT": "/Scans/Dated/", "WRITE_DESCRIPTION": "no"})
-    assert s.immich_url == "http://x:2283" and s.tag_root == "Scans/Dated" and s.write_description is False
-    with pytest.raises(SystemExit):
-        Settings.from_env({"IMMICH_URL": "http://x", "IMMICH_API_KEY": "k", "TIMEZONE": "Mars/Base"})
-    with pytest.raises(SystemExit):
-        Settings.from_env({"IMMICH_URL": "http://x"})

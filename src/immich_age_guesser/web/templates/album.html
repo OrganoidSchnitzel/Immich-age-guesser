@@ -43,7 +43,10 @@
         </div>
       </form>
     </div>
+    <label class="remove-opt"><input id="remove-from-album" type="checkbox"{% if remove_default %} checked{% endif %}>
+      Remove photos from this album once their date is written <span class="muted">(they stay in Immich)</span></label>
     <div id="job" class="job" hidden></div>
+    <div id="job-result" class="job-result" hidden></div>
   </section>
 
   <section>
