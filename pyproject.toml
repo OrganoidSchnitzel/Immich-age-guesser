@@ -20,7 +20,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Install torch separately first (CPU wheel: --index-url https://download.pytorch.org/whl/cpu).
+# Install torch and torchvision separately first, from the same index
+# (CPU: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu).
 mivolo = [
     "transformers>=4.40,<5",
     "timm>=0.9",

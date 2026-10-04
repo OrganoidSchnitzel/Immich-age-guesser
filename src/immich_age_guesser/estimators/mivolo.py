@@ -22,7 +22,7 @@ class MiVoloEstimator:
         except ImportError as exc:  # pragma: no cover - depends on optional packages
             raise SystemExit(
                 f"Cannot load MiVOLO ({exc}). It needs torch and the 'mivolo' extra: "
-                "pip install torch --index-url https://download.pytorch.org/whl/cpu && "
+                "pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu && "
                 "pip install '.[mivolo]'"
             ) from exc
 

@@ -13,12 +13,15 @@ ENV PYTHONUNBUFFERED=1 \
 # CPU-only PyTorch by default (small, runs everywhere). For an AMD GPU with ROCm, build with e.g.
 #   --build-arg TORCH_INDEX=https://download.pytorch.org/whl/rocm6.2
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
-RUN pip install torch --index-url ${TORCH_INDEX}
+# torch and torchvision (needed by timm) must come from the same index; the constraints file keeps the
+# following install from replacing them with mismatching builds from PyPI.
+RUN pip install torch torchvision --index-url ${TORCH_INDEX} \
+ && pip freeze | grep -iE "^(torch|torchvision)==" > /tmp/torch-constraints.txt
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install ".[mivolo]"
+RUN pip install ".[mivolo]" -c /tmp/torch-constraints.txt
 
 VOLUME /data
 EXPOSE 8080

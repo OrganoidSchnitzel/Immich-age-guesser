@@ -120,7 +120,7 @@ downloaded model (about 100 MB, fetched on the first estimate) live in the `/dat
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -e ".[mivolo]"
 immich-age-guesser serve --port 8080      # then open http://localhost:8080
 ```
