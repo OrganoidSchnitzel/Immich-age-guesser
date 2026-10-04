@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>immich-age-guesser</Name>
+  <Repository>ghcr.io/organoidschnitzel/immich-age-guesser:latest</Repository>
+  <Registry>https://github.com/OrganoidSchnitzel/Immich-age-guesser/pkgs/container/immich-age-guesser</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/OrganoidSchnitzel/Immich-age-guesser/issues</Support>
+  <Project>https://github.com/OrganoidSchnitzel/Immich-age-guesser</Project>
+  <Overview>Dates scanned analog photos in Immich: write dates you know (year or month is enough) to a batch of photos, or estimate them from the ages of the people in them. After starting, open the WebUI and enter your Immich URL and API key on the setup page.</Overview>
+  <Category>MediaApp:Photos Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/immich-app/immich/main/design/immich-logo.svg</Icon>
+  <Config Name="WebUI port" Target="8080" Default="8080" Mode="tcp" Description="Port of the web interface. Keep it on your LAN: the UI has no login." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/immich-age-guesser" Mode="rw" Description="Settings, the tool's records and the downloaded age model (about 100 MB)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/immich-age-guesser</Config>
+  <Config Name="Time zone" Target="TZ" Default="Europe/Berlin" Mode="" Description="Time zone for the dates written to Immich (can also be changed on the settings page)." Type="Variable" Display="always" Required="false" Mask="false">Europe/Berlin</Config>
+</Container>

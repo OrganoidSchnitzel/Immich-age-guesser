@@ -116,6 +116,26 @@ downloaded model (about 100 MB, fetched on the first estimate) live in the `/dat
 
 **Updating:** `docker compose pull && docker compose up -d`.
 
+### Option C: Unraid
+
+*Docker → Add Container*, then either fill in the form by hand or use the template:
+
+- **By hand:** Repository `ghcr.io/organoidschnitzel/immich-age-guesser:latest` (all lowercase),
+  port `8080` → container port `8080`, path `/mnt/user/appdata/immich-age-guesser` → container
+  path `/data`, optionally variable `TZ` = `Europe/Berlin`.
+- **With the template:** run this once in the Unraid terminal, then pick
+  *immich-age-guesser* in the *Template* dropdown of *Add Container*:
+
+  ```bash
+  wget -O /boot/config/plugins/dockerMan/templates-user/my-immich-age-guesser.xml \
+    https://raw.githubusercontent.com/OrganoidSchnitzel/Immich-age-guesser/HEAD/unraid/immich-age-guesser.xml
+  ```
+
+Then open the WebUI. As the Immich URL use `http://<unraid-ip>:2283`, the port your Immich
+container publishes.
+
+The tool is not in the *Apps* tab (Community Applications), so searching there finds nothing.
+
 ### Without Docker (Python 3.10+)
 
 ```bash
