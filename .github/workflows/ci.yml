@@ -51,6 +51,10 @@ jobs:
           curl -fsS localhost:8080/settings | grep -q 'Connect the tool to your Immich server'
           docker rm -f smoke
 
+      - name: Installed ML packages
+        run: |
+          docker run --rm age-guesser:test sh -c 'pip list 2>/dev/null | grep -iE "^(torch|transformers|timm|opencv|numpy|huggingface)"; python -c "import torch, transformers, timm, cv2; from transformers import AutoImageProcessor"'
+
       - name: Smoke test (MiVOLO model loads and runs)
         run: docker run --rm age-guesser:test immich-age-guesser check-model
 
