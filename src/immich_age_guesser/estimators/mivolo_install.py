@@ -44,6 +44,29 @@ PATCHES: list[tuple[str, str, str]] = [
         "    from timm.models._registry import split_model_name_tag\n",
     ),
     (
+        # timm 0.9 added `pos_drop_rate` after `drop_rate` in VOLO.__init__, shifting MiVOLO's
+        # positional arguments; pass the ones after `drop_rate` by name (valid for old and new timm).
+        "model/mivolo_model.py",
+        "            drop_rate,\n"
+        "            attn_drop_rate,\n"
+        "            drop_path_rate,\n"
+        "            norm_layer,\n"
+        "            post_layers,\n"
+        "            use_aux_head,\n"
+        "            use_mix_token,\n"
+        "            pooling_scale,\n"
+        "        )\n",
+        "            drop_rate,\n"
+        "            attn_drop_rate=attn_drop_rate,\n"
+        "            drop_path_rate=drop_path_rate,\n"
+        "            norm_layer=norm_layer,\n"
+        "            post_layers=post_layers,\n"
+        "            use_aux_head=use_aux_head,\n"
+        "            use_mix_token=use_mix_token,\n"
+        "            pooling_scale=pooling_scale,\n"
+        "        )\n",
+    ),
+    (
         "model/create_timm_model.py",
         "pretrained_cfg, model_name = load_model_config_from_hf(model_name)\n",
         "pretrained_cfg, model_name = load_model_config_from_hf(model_name)[:2]  # 3 values in timm 1.0\n",
