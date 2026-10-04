@@ -122,6 +122,7 @@ downloaded model (about 100 MB, fetched on the first estimate) live in the `/dat
 python -m venv .venv && . .venv/bin/activate
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -e ".[mivolo]"
+immich-age-guesser install-mivolo         # MiVOLO's model code is not on PyPI
 immich-age-guesser serve --port 8080      # then open http://localhost:8080
 ```
 
@@ -180,8 +181,9 @@ is shown read-only on the Settings page.
   costumes, and some ethnicities or age groups. Calibration corrects part of this, per person too.
 - **Local data.** The tool keeps its settings and its own records in `DATA_DIR`: cached face
   ages, pending suggestions, and what was written. Deleting the folder loses no data in Immich.
-- **MiVOLO license.** MiVOLO's code and weights have their own license. See the `license` folder
-  of its repository before using it for anything beyond private use.
+- **MiVOLO license.** MiVOLO's code is Apache-2.0. The model weights are downloaded from
+  [Hugging Face](https://huggingface.co/iitolstykh/mivolo_v2) under the license stated there;
+  check it before using the tool for anything beyond private use.
 
 ## Development
 

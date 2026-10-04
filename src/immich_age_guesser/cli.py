@@ -71,6 +71,12 @@ def cmd_check_model(args: argparse.Namespace, settings: Settings) -> None:
     print(f"Model works. Estimated age{' of ' + args.image if args.image else ' (plain test image)'}: {age:.1f}")
 
 
+def cmd_install_mivolo(args: argparse.Namespace, settings: Settings) -> None:
+    from .estimators.mivolo_install import MIVOLO_REF, install
+
+    print(f"Installed MiVOLO {MIVOLO_REF[:7]} to {install()}")
+
+
 def cmd_set_date(args: argparse.Namespace, settings: Settings) -> None:
     g = _guesser(settings)
     spec = parse_date_spec(args.date)
@@ -141,6 +147,9 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("check-model", help="load the age model and run it once (no Immich needed)")
     p.add_argument("--image", help="a face photo to run the model on")
     p.set_defaults(fn=cmd_check_model)
+
+    p = sub.add_parser("install-mivolo", help="download MiVOLO's model code (needed once for the MiVOLO model)")
+    p.set_defaults(fn=cmd_install_mivolo)
 
     p = sub.add_parser("set-date", help="write a known date to every photo of an album")
     p.add_argument("--album", required=True, help="album name or id")

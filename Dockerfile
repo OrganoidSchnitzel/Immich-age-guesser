@@ -23,13 +23,8 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install ".[mivolo]" -c /tmp/torch-constraints.txt
 
-# MiVOLO's model code (Apache-2.0) is not on PyPI, and its setup.py would pull in old pinned
-# dependencies (timm 0.8, ultralytics) that the age model does not need. Copy just the package.
-ARG MIVOLO_REF=37475e3f8818b5f22448003feec3e64b01bfb188
-ADD https://github.com/WildChlamydia/MiVOLO/archive/${MIVOLO_REF}.tar.gz /tmp/mivolo.tar.gz
-RUN tar -xzf /tmp/mivolo.tar.gz -C /tmp \
- && cp -r /tmp/MiVOLO-${MIVOLO_REF}/mivolo "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/" \
- && rm -rf /tmp/mivolo.tar.gz /tmp/MiVOLO-${MIVOLO_REF}
+# MiVOLO's model package is not on PyPI: fetch it from a pinned commit and adapt it to current timm.
+RUN immich-age-guesser install-mivolo
 
 VOLUME /data
 EXPOSE 8080

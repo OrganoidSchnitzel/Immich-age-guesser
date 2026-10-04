@@ -23,7 +23,7 @@ class MiVoloEstimator:
             raise SystemExit(
                 f"Cannot load MiVOLO ({exc}). It needs torch and the 'mivolo' extra: "
                 "pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu && "
-                "pip install '.[mivolo]'"
+                "pip install '.[mivolo]' && immich-age-guesser install-mivolo"
             ) from exc
 
         self._torch = torch

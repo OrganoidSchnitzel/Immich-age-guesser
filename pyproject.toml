@@ -26,6 +26,7 @@ mivolo = [
     "transformers>=4.40,<5",
     "timm>=0.9",
     "opencv-python-headless>=4.8",
+    "scipy>=1.10",
 ]
 dev = ["pytest>=8"]
 
